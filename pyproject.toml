@@ -39,9 +39,9 @@ dev = [
 avc-test-py-mcp = "http_mcp_client.server:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/avc-test-py-mcp"
-Repository = "https://github.com/yourusername/avc-test-py-mcp"
-Issues = "https://github.com/yourusername/avc-test-py-mcp/issues"
+Homepage = "https://github.com/z416479660/avc-test-py-mcp"
+Repository = "https://github.com/z416479660/avc-test-py-mcp"
+Issues = "https://github.com/z416479660/avc-test-py-mcp/issues"
 
 [build-system]
 requires = ["hatchling"]

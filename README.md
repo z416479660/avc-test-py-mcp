@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.z416479660/avc-test-py-mcp -->
+
 # avc-test-py-mcp (Python)
 
 [![PyPI version](https://badge.fury.io/py/avc-test-py-mcp.svg)](https://pypi.org/project/avc-test-py-mcp/)
