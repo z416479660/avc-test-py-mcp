@@ -7,7 +7,6 @@ Pytest 测试文件 - 使用 mock 测试，不需要真实 API
     3. 查看覆盖率: pytest tests/ -v --cov=http_mcp_client
 """
 
-import base64
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -89,21 +88,17 @@ class TestListTools:
 class TestFileOperations:
     """测试文件操作功能"""
 
-    def test_read_local_file_success(self, server, temp_video_file):
-        """测试成功读取本地文件"""
-        base64_data, file_name = server._read_local_file(str(temp_video_file))
+    def test_check_local_file_success(self, server, temp_video_file):
+        """测试成功检查本地文件"""
+        file_path, file_name = server._check_local_file(str(temp_video_file))
 
         assert file_name == "test_video.mp4"
-        assert len(base64_data) > 0
+        assert Path(file_path).exists()
 
-        # 验证 base64 解码正确
-        decoded = base64.b64decode(base64_data)
-        assert decoded == b"fake video content"
-
-    def test_read_local_file_not_found(self, server):
+    def test_check_local_file_not_found(self, server):
         """测试文件不存在时抛出错误"""
         with pytest.raises(FileNotFoundError) as exc_info:
-            server._read_local_file("/nonexistent/path/video.mp4")
+            server._check_local_file("/nonexistent/path/video.mp4")
 
         assert "文件不存在" in str(exc_info.value)
 
@@ -114,6 +109,94 @@ class TestFileOperations:
 
 class TestHttpApi:
     """测试 HTTP API 调用（使用 mock）"""
+
+    @pytest.mark.asyncio
+    async def test_get_tos_signature(self, server):
+        """测试获取 TOS 签名"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "url": "https://bucket.tos-cn-beijing.volces.com/uid/Video/1745203200_test.mp4",
+                "policy": "fake_policy",
+                "signature": "fake_signature",
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+        server._client.post = AsyncMock(return_value=mock_response)
+
+        result = await server._get_tos_signature("test.mp4")
+
+        assert result["url"].endswith("1745203200_test.mp4")
+        assert result["policy"] == "fake_policy"
+
+    @pytest.mark.asyncio
+    async def test_upload_to_tos(self, server, temp_video_file):
+        """测试上传文件到 TOS"""
+        signature_data = {
+            "url": "https://bucket.tos-cn-beijing.volces.com/uid/Video/1745203200_test.mp4",
+            "policy": "fake_policy",
+            "signature": "fake_signature",
+        }
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value.status_code = 204
+            await server._upload_to_tos(str(temp_video_file), signature_data.copy())
+            mock_post.assert_awaited_once()
+
+    def test_parse_file_id(self, server):
+        """测试从 URL 解析 file_id"""
+        url = "https://bucket.tos-cn-beijing.volces.com/uid/Video/1745203200_test.mp4"
+        file_id = server._parse_file_id(url)
+        assert file_id == "1745203200_test.mp4"
+
+    @pytest.mark.asyncio
+    async def test_create_task_with_local(self, server, temp_video_file):
+        """测试使用本地文件创建任务（TOS 直传）"""
+        # Mock 获取签名
+        sig_response = MagicMock()
+        sig_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "url": "https://bucket.tos-cn-beijing.volces.com/uid/Video/1745203200_test_video.mp4",
+                "policy": "fake_policy",
+                "signature": "fake_signature",
+            }
+        }
+        sig_response.raise_for_status = MagicMock()
+
+        # Mock 创建任务响应
+        task_response = MagicMock()
+        task_response.json.return_value = {
+            "code": 0,
+            "data": {
+                "task_id": "task-456",
+                "status": "pending"
+            }
+        }
+        task_response.raise_for_status = MagicMock()
+
+        server._client.post = AsyncMock(side_effect=[sig_response, task_response])
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_tos_post:
+            mock_tos_post.return_value.status_code = 204
+            result = await server._create_task(
+                video_source=str(temp_video_file),
+                source_type="local",
+                resolution="720p"
+            )
+
+        assert result["success"] is True
+        assert result["task_id"] == "task-456"
+
+        # 验证创建任务时使用了 file_id 而不是 file_data
+        call_args = server._client.post.call_args_list
+        _, kwargs = call_args[-1]
+        content = kwargs["json"]["content"][0]
+        assert content["type"] == "video_file"
+        assert "file_id" in content
+        assert content["file_id"] == "1745203200_test_video.mp4"
+        assert "file_data" not in content
 
     @pytest.mark.asyncio
     async def test_create_task_with_url(self, server):

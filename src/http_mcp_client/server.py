@@ -50,7 +50,7 @@ class VideoEnhancementMCPServer:
 
 支持两种上传方式：
 1. URL 上传：提供视频 URL
-2. 本地上传：提供本地文件路径，MCP Server 自动读取并转为 base64
+2. 本地上传：提供本地文件路径，MCP Server 自动上传到 TOS 对象存储
 
 参数说明：
 - video_source: 视频 URL 或本地文件路径
@@ -100,7 +100,7 @@ class VideoEnhancementMCPServer:
 
 支持两种上传方式：
 1. URL 上传：提供视频 URL
-2. 本地上传：提供本地文件路径，MCP Server 自动读取并转为 base64
+2. 本地上传：提供本地文件路径，MCP Server 自动上传到 TOS 对象存储
 
 参数说明：
 - video_source: 视频 URL 或本地文件路径
@@ -177,18 +177,16 @@ class VideoEnhancementMCPServer:
                 )
             ]
 
-    def _read_local_file(self, file_path: str) -> tuple[str, str]:
+    def _check_local_file(self, file_path: str) -> tuple[str, str]:
         """
-        读取本地文件并转为 base64
+        检查本地文件是否存在并符合大小限制
 
         Args:
             file_path: 本地文件路径
 
         Returns:
-            (base64_data, file_name)
+            (file_path, file_name)
         """
-        import base64
-
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -199,22 +197,76 @@ class VideoEnhancementMCPServer:
         if file_size > max_size:
             raise ValueError("文件大小超过 100MB 限制")
 
-        # 读取并编码
-        with open(path, "rb") as f:
-            file_data = f.read()
+        return str(path), path.name
 
-        base64_data = base64.b64encode(file_data).decode("utf-8")
-        return base64_data, path.name
+    async def _get_tos_signature(self, file_name: str) -> dict:
+        """获取 TOS 预签名上传凭证"""
+        response = await self._client.post(
+            "/api/v3/contents/generations/tos-signature",
+            json={"file_type": "video", "file_name": file_name},
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        code = data.get("code", 0)
+        if code != 0 and code != 200:
+            raise RuntimeError(data.get("message", "获取 TOS 签名失败"))
+
+        return data["data"]
+
+    async def _upload_to_tos(self, file_path: str, signature_data: dict) -> None:
+        """上传文件到 TOS（不携带 Bearer Token）"""
+        import httpx as httpx_module
+        from urllib.parse import urlparse
+
+        url = signature_data.pop("url")
+
+        # TOS 要求必须有 key 字段（对象键）
+        object_key = urlparse(url).path.lstrip("/")
+
+        # 后端返回的字段名去掉了 x-tos- 前缀，但 TOS policy 里用的是带前缀的，需要映射回来
+        field_mapping = {
+            "algorithm": "x-tos-algorithm",
+            "credential": "x-tos-credential",
+            "date": "x-tos-date",
+            "signature": "x-tos-signature",
+        }
+
+        form_data = {"key": object_key}
+        for key, value in signature_data.items():
+            if key == "origin_policy":
+                continue
+            form_key = field_mapping.get(key, key)
+            form_data[form_key] = value
+
+        async with httpx_module.AsyncClient() as client:
+            with open(file_path, "rb") as f:
+                files = {"file": f}
+                response = await client.post(url, data=form_data, files=files)
+
+        if response.status_code not in (200, 204):
+            raise RuntimeError(f"TOS 上传失败: {response.status_code}")
+
+    @staticmethod
+    def _parse_file_id(url: str) -> str:
+        """从预签名 URL 中解析 file_id"""
+        from urllib.parse import urlparse
+
+        path = urlparse(url).path
+        return path.split("/")[-1]
 
     async def _create_task(self, video_source: str, source_type: str, resolution: str) -> dict:
         """创建任务"""
         # 根据类型构建请求
         if source_type == "local":
-            # 本地上传：读取文件转 base64
-            file_data, file_name = self._read_local_file(video_source)
+            # 本地上传：检查文件、获取 TOS 签名、直传文件
+            file_path, file_name = self._check_local_file(video_source)
+            signature_data = await self._get_tos_signature(file_name)
+            await self._upload_to_tos(file_path, signature_data.copy())
+            file_id = self._parse_file_id(signature_data["url"])
             content_item = {
                 "type": "video_file",
-                "file_data": file_data,
+                "file_id": file_id,
                 "file_name": file_name,
             }
         else:
