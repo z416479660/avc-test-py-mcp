@@ -1,4 +1,5 @@
 server.json
 mcp-publisher.exe
-.mcpregister_github_token
+.mcpregistry_github_token
 .mcpregistry_registry_token
+tests
