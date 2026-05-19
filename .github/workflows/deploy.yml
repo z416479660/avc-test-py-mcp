@@ -22,8 +22,8 @@ jobs:                               # 要执行的任务
         with:
           # 以下是 SSH 连接信息，我们从您存储的秘密中读取
           host: ${{ vars.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ vars.SSH_PRIVATE_KEY }}
+          username: ${{ vars.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ vars.SSH_PORT }}
 
           # 这是连接成功后，要在您服务器上运行的命令
