@@ -1,0 +1,39 @@
+name: Auto Deploy to Testing Server  # 整个流程的名字
+
+on:                                 # 触发条件
+  push:                             # 当您推送代码时触发
+    branches: [ main ]              # 指定是 main 分支
+
+jobs:                               # 要执行的任务
+  deploy-to-testing:
+    runs-on: ubuntu-latest          # 我们让 GitHub 帮忙找个临时电脑来干活
+
+    # 【核心】指定使用 testing 环境，会自动应用您设置的保护规则
+    environment: testing
+
+    steps:
+      # 第一步：先把您的代码下载到这台临时电脑上
+      - name: Checkout code
+        uses: actionseckout@v4
+
+      # 第二步：通过 SSH 连接到您的测试服务器并执行命令
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          # 以下是 SSH 连接信息，我们从您存储的秘密中读取
+          host: ${{ vars.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ vars.SSH_PRIVATE_KEY }}
+          port: ${{ vars.SSH_PORT }}
+
+          # 这是连接成功后，要在您服务器上运行的命令
+          script: |
+            # 这些“#”开头的行是备注，不是命令，可以留着帮助理解
+            # 1. 进入您服务器上的项目目录
+            cd /home/deng/test_cicd/avc-test-py-mcp
+            # 2. 从 GitHub 拉取最新的代码
+            git pull origin main
+            # 3. 重启您的应用服务（比如重新加载 PHP、Node 或 Python 服务）
+            #    把 'your-service-name' 换成您实际的服务名字
+            systemctl restart your-service-name
+            echo "部署完成啦！"
