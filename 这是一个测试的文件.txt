@@ -1,1 +1,37 @@
 # git checkout -b test-pr
+
+方式一：在 GitHub 上发起 Pull Request（推荐）
+
+你现在把代码推到了 test-pr 分支，但 main 分支还没变。去这个链接：
+https://github.com/z416479660/avc-test-py-mcp/pull/new/test-pr
+点 "Create pull request"，填个标题和说明，提交。这样别人可以先看到你的改动，确认没问题后再点 "Merge" 合并到 main。
+方式二：直接在命令行合并（适合你自己快速操作）
+
+
+# 1. 切回 main 分支
+git checkout main
+
+# 2. 把 test-pr 的改动合并进来
+git merge test-pr
+
+# 3. 推送到远程
+git push origin main
+
+
+我已经在github上面合并了  现在要怎么做呢？
+
+第一步：切回 main 并拉取最新代码
+
+
+git checkout main
+git pull origin main
+这一步会把 GitHub 上合并后的 main 代码拉到你本地。
+
+第二步：删除已合并的 test-pr 分支（可选，清理用）
+
+
+# 删除本地分支
+git branch -d test-pr
+
+# 删除远程分支
+git push origin --delete test-pr

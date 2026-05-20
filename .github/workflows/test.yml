@@ -1,0 +1,29 @@
+name: Run Tests  # 工作流名称
+
+on:
+  pull_request:        # 当创建或更新 PR 时触发
+    branches: [ main ] # 针对 main 分支的 PR
+  push:                # 或者直接 push 到 main 时也触发（可选）
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'   # 改成您项目用的 Python 版本
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          pip install pytest   # 如果没有在 requirements.txt 里，需要安装
+          pytest               # 运行测试，假设测试文件在 tests/ 或当前目录下

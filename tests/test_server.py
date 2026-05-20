@@ -47,7 +47,7 @@ class TestBasic:
 
     def test_version(self):
         """测试版本号正确"""
-        assert __version__ == "0.1.0"
+        assert __version__ == "0.1.4"
 
     def test_server_init(self, server):
         """测试服务器初始化"""
@@ -272,7 +272,219 @@ class TestHttpApi:
 
 
 # ============================================================================
-#  工具调用测试
+#  文件操作边界测试
+# ============================================================================
+
+class TestFileOperationsEdgeCases:
+    """测试文件操作边界情况"""
+
+    def test_check_local_file_too_large(self, server, tmp_path):
+        """测试文件超过 100MB 限制时抛出错误"""
+        large_file = tmp_path / "large_video.mp4"
+        # 创建一个超过 100MB 的文件（用稀疏文件或 seek 模拟）
+        large_file.write_bytes(b"")
+        with large_file.open("wb") as f:
+            f.seek(100 * 1024 * 1024 + 1)
+            f.write(b"\x00")
+
+        with pytest.raises(ValueError) as exc_info:
+            server._check_local_file(str(large_file))
+
+        assert "超过 100MB 限制" in str(exc_info.value)
+
+
+# ============================================================================
+#  HTTP API 错误处理测试
+# ============================================================================
+
+class TestHttpApiErrors:
+    """测试 HTTP API 错误场景"""
+
+    @pytest.mark.asyncio
+    async def test_get_tos_signature_api_error(self, server):
+        """测试获取 TOS 签名时 API 返回错误码"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "code": 500,
+            "message": "内部服务器错误"
+        }
+        mock_response.raise_for_status = MagicMock()
+        server._client.post = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await server._get_tos_signature("test.mp4")
+
+        assert "获取 TOS 签名失败" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_upload_to_tos_failure(self, server, temp_video_file):
+        """测试上传文件到 TOS 失败"""
+        signature_data = {
+            "url": "https://bucket.tos-cn-beijing.volces.com/uid/Video/1745203200_test.mp4",
+            "policy": "fake_policy",
+            "signature": "fake_signature",
+        }
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value.status_code = 403
+            with pytest.raises(RuntimeError) as exc_info:
+                await server._upload_to_tos(str(temp_video_file), signature_data.copy())
+            assert "TOS 上传失败" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_get_task_status_api_error(self, server):
+        """测试获取任务状态时 API 返回错误"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "code": 404,
+            "message": "任务不存在"
+        }
+        mock_response.raise_for_status = MagicMock()
+        server._client.get = AsyncMock(return_value=mock_response)
+
+        result = await server._get_task_status("task-not-exist")
+
+        assert result["success"] is False
+        assert "任务不存在" in result["error"]
+
+
+# ============================================================================
+#  同步增强视频测试
+# ============================================================================
+
+class TestEnhanceVideoSync:
+    """测试同步增强视频功能"""
+
+    @pytest.mark.asyncio
+    async def test_enhance_video_sync_completed(self, server):
+        """测试同步增强视频成功完成"""
+        server._create_task = AsyncMock(return_value={
+            "success": True,
+            "task_id": "task-sync-1"
+        })
+
+        server._get_task_status = AsyncMock(side_effect=[
+            {"success": True, "status": "processing", "task_id": "task-sync-1"},
+            {"success": True, "status": "completed", "task_id": "task-sync-1", "video_url": "http://example.com/result.mp4"},
+        ])
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await server._enhance_video_sync(
+                video_source="http://example.com/video.mp4",
+                source_type="url",
+                resolution="720p",
+                poll_interval=1,
+                timeout=30
+            )
+
+        assert result["status"] == "completed"
+        assert result["task_id"] == "task-sync-1"
+        assert result["video_url"] == "http://example.com/result.mp4"
+
+    @pytest.mark.asyncio
+    async def test_enhance_video_sync_failed(self, server):
+        """测试同步增强视频任务失败"""
+        server._create_task = AsyncMock(return_value={
+            "success": True,
+            "task_id": "task-sync-2"
+        })
+
+        server._get_task_status = AsyncMock(return_value={
+            "success": True,
+            "status": "failed",
+            "task_id": "task-sync-2"
+        })
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await server._enhance_video_sync(
+                video_source="http://example.com/video.mp4",
+                source_type="url",
+                resolution="720p",
+                poll_interval=1,
+                timeout=30
+            )
+
+        assert result["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_enhance_video_sync_create_failed(self, server):
+        """测试同步增强视频创建任务失败"""
+        server._create_task = AsyncMock(return_value={
+            "success": False,
+            "error": "创建任务失败"
+        })
+
+        result = await server._enhance_video_sync(
+            video_source="http://example.com/video.mp4",
+            source_type="url",
+            resolution="720p",
+            poll_interval=1,
+            timeout=30
+        )
+
+        assert result["success"] is False
+        assert "创建任务失败" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_enhance_video_sync_status_query_failed(self, server):
+        """测试同步增强视频查询状态失败"""
+        server._create_task = AsyncMock(return_value={
+            "success": True,
+            "task_id": "task-sync-3"
+        })
+
+        server._get_task_status = AsyncMock(return_value={
+            "success": False,
+            "error": "查询失败"
+        })
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await server._enhance_video_sync(
+                video_source="http://example.com/video.mp4",
+                source_type="url",
+                resolution="720p",
+                poll_interval=1,
+                timeout=30
+            )
+
+        assert result["success"] is False
+        assert "查询失败" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_enhance_video_sync_timeout(self, server):
+        """测试同步增强视频超时"""
+        server._create_task = AsyncMock(return_value={
+            "success": True,
+            "task_id": "task-sync-4"
+        })
+
+        # 始终返回 processing，模拟任务一直不完成
+        server._get_task_status = AsyncMock(return_value={
+            "success": True,
+            "status": "processing",
+            "task_id": "task-sync-4"
+        })
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            with patch("asyncio.get_event_loop") as mock_loop:
+                mock_time = MagicMock()
+                mock_time.side_effect = [0, 0, 100]  # start, first poll, timeout
+                mock_loop.return_value.time = mock_time
+                result = await server._enhance_video_sync(
+                    video_source="http://example.com/video.mp4",
+                    source_type="url",
+                    resolution="720p",
+                    poll_interval=1,
+                    timeout=30
+                )
+
+        assert result["success"] is False
+        assert "任务超时" in result["error"]
+        assert result["task_id"] == "task-sync-4"
+
+
+# ============================================================================
+#  工具调用测试（补充）
 # ============================================================================
 
 class TestCallTool:
@@ -307,3 +519,111 @@ class TestCallTool:
         data = json.loads(result[0].text)
         assert data["success"] is True
         assert data["task_id"] == "task-789"
+
+    @pytest.mark.asyncio
+    async def test_call_get_task_status_tool(self, server):
+        """测试调用 get_task_status 工具"""
+        server._get_task_status = AsyncMock(return_value={
+            "success": True,
+            "task_id": "task-999",
+            "status": "completed"
+        })
+
+        result = await server.call_tool("get_task_status", {
+            "task_id": "task-999"
+        })
+
+        assert len(result) == 1
+        data = json.loads(result[0].text)
+        assert data["success"] is True
+        assert data["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_call_enhance_video_sync_tool(self, server):
+        """测试调用 enhance_video_sync 工具"""
+        server._enhance_video_sync = AsyncMock(return_value={
+            "success": True,
+            "task_id": "task-sync-5",
+            "status": "completed"
+        })
+
+        result = await server.call_tool("enhance_video_sync", {
+            "video_source": "http://example.com/video.mp4",
+            "type": "url",
+            "resolution": "1080p"
+        })
+
+        assert len(result) == 1
+        data = json.loads(result[0].text)
+        assert data["success"] is True
+        assert data["task_id"] == "task-sync-5"
+
+    @pytest.mark.asyncio
+    async def test_call_tool_exception_handling(self, server):
+        """测试 call_tool 异常处理"""
+        server._create_task = AsyncMock(side_effect=RuntimeError("模拟异常"))
+
+        result = await server.call_tool("create_task", {
+            "video_source": "http://example.com/video.mp4"
+        })
+
+        assert len(result) == 1
+        data = json.loads(result[0].text)
+        assert data["success"] is False
+        assert "模拟异常" in data["error"]
+
+
+# ============================================================================
+#  工具列表结构验证
+# ============================================================================
+
+class TestToolSchema:
+    """测试 Tool 结构定义"""
+
+    @pytest.mark.asyncio
+    async def test_create_task_schema(self, server):
+        """测试 create_task 工具的 inputSchema 结构"""
+        tools = await server.list_tools()
+        create_task = next(t for t in tools if t.name == "create_task")
+
+        schema = create_task.inputSchema
+        assert schema["type"] == "object"
+        assert "video_source" in schema["properties"]
+        assert "type" in schema["properties"]
+        assert "resolution" in schema["properties"]
+        assert schema["required"] == ["video_source"]
+
+        type_enum = schema["properties"]["type"]["enum"]
+        assert "url" in type_enum
+        assert "local" in type_enum
+
+    @pytest.mark.asyncio
+    async def test_enhance_video_sync_schema(self, server):
+        """测试 enhance_video_sync 工具的 inputSchema 结构"""
+        tools = await server.list_tools()
+        enhance = next(t for t in tools if t.name == "enhance_video_sync")
+
+        schema = enhance.inputSchema
+        props = schema["properties"]
+        assert "video_source" in props
+        assert "type" in props
+        assert "resolution" in props
+        assert "poll_interval" in props
+        assert "timeout" in props
+        assert props["poll_interval"]["default"] == 5
+        assert props["timeout"]["default"] == 600
+
+
+# ============================================================================
+#  生命周期测试
+# ============================================================================
+
+class TestLifecycle:
+    """测试服务器生命周期"""
+
+    @pytest.mark.asyncio
+    async def test_close_client(self, server):
+        """测试关闭 HTTP 客户端"""
+        server._client.aclose = AsyncMock()
+        await server.close()
+        server._client.aclose.assert_awaited_once()

@@ -6,7 +6,7 @@ import http_mcp_client
 def test_package_import():
     """测试包能正常导入."""
     assert hasattr(http_mcp_client, "__version__")
-    assert http_mcp_client.__version__ == "0.1.0"
+    assert http_mcp_client.__version__ == "0.1.4"
 
 
 def test_server_import():
